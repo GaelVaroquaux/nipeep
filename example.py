@@ -1,5 +1,15 @@
 """
-Helper functions for nipype using joblib: example file
+Using nipype in an imperative way, but without dealing with explicit file naming:
+bringing back scope to command-line programming.
+
+Note that in the following example, we are calling command-lines with disk I/O that 
+persists across runs, but we never have to worry about the file names or the 
+directories.
+
+The disk location of the persistence is encoded by hashes. To find out where an 
+operation has been persisted, simply look in it's output variable::
+
+    out.runtime.cwd
 """
 
 ################################################################################
