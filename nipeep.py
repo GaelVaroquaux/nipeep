@@ -104,14 +104,14 @@ class PipeFunc(object):
                                 interface.__class__)
         hasher = hashlib.new('md5')
         hasher.update(pickle.dumps(inputs))
-        name = '%s-%s_%s' % (interface.__class__.__module__.replace('.', '-'),
-                             interface.__class__.__name__, 
-                             hasher.hexdigest())
-        node = Node(interface, name=name)
-        node.base_dir = self.base_dir
+        dir_name = '%s-%s' % (interface.__class__.__module__.replace('.', '-'),
+                              interface.__class__.__name__) 
+        job_name = hasher.hexdigest()
+        node = Node(interface, name=job_name)
+        node.base_dir = os.path.join(self.base_dir, dir_name)
         out = node.run()
         if self.callback is not None:
-            self.callback(name)
+            self.callback(dir_name, job_name)
         return out
         
     def __repr__(self):
@@ -120,10 +120,41 @@ class PipeFunc(object):
                            self.interface.__name__,
                            self.base_dir)
     
-
 ################################################################################
 # Memory manager: provide some tracking about what is computed when, to
 # be able to flush the disk
+
+def read_log(filename, run_dict=None):
+    if run_dict is None:
+        run_dict = dict()
+    for line in open(filename, 'r'):
+        dir_name, job_name = line[:-1].split('/')
+        jobs = run_dict.get(dir_name, set())
+        jobs.add(job_name)
+        run_dict[dir_name] = jobs
+    return run_dict
+
+
+def rm_all_but(base_dir, dirs_to_keep, warn=False):
+    """ Remove all the sub-directories of base_dir, but those listed
+
+        Parameters
+        ============
+        base_dir: string
+            The base directory
+        dirs_to_keep: set
+            The names of the directories to keep
+    """
+    all_dirs = os.listdir(base_dir)
+    all_dirs = [d for d in all_dirs if not d.startswith('log.')]
+    dirs_to_rm = list(dirs_to_keep.symmetric_difference(all_dirs))
+    for dir_name in dirs_to_rm:
+        dir_name = os.path.join(base_dir, dir_name)
+        if os.path.exists(dir_name):
+            if warn:
+                print 'removing directory: %s' % dir_name
+            shutil.rmtree(dir_name)
+
 
 class _MemoryCallback(object):
     "An object to avoid closures and have everything pickle"
@@ -131,8 +162,8 @@ class _MemoryCallback(object):
     def __init__(self, memory):
         self.memory = memory
 
-    def __call__(self, name):
-        self.memory._log_name(name)
+    def __call__(self, dir_name, job_name):
+        self.memory._log_name(dir_name, job_name)
 
 
 class Memory(object):
@@ -151,7 +182,7 @@ class Memory(object):
         """
         return PipeFunc(interface, self.base_dir, _MemoryCallback(self))
 
-    def _log_name(self, name):
+    def _log_name(self, dir_name, job_name):
         """ Increment counters tracking which cached function get executed.
         """
         base_dir = self.base_dir
@@ -159,7 +190,7 @@ class Memory(object):
         # immediately to avoid race conditions in parallel computing: 
         # file appends are atomic
         open(os.path.join(base_dir, 'log.current'), 
-            'a').write('%s\n' % name)
+            'a').write('%s/%s\n' % (dir_name, job_name))
         t = time.localtime()
         year_dir = os.path.join(base_dir, 'log.%i' % t.tm_year)
         try:
@@ -172,7 +203,7 @@ class Memory(object):
         except OSError:
             "Dir exists"
         open(os.path.join(month_dir, '%02i.log' % t.tm_mday), 
-            'a').write('%s\n' % name)
+            'a').write('%s/%s\n' % (dir_name, job_name))
      
     def clear_previous_runs(self, warn=True):
         """ Remove all the cache that where not used in the latest run of 
@@ -180,8 +211,7 @@ class Memory(object):
             was created.
         """
         base_dir = self.base_dir
-        latest_runs = set(l[:-1] for l in
-            open(os.path.join(base_dir, 'log.current'), 'r'))
+        latest_runs = read_log(os.path.join(base_dir, 'log.current'))
         self._clear_all_but(latest_runs, warn=warn)
 
     def clear_runs_since(self, day=None, month=None, year=None, warn=True):
@@ -192,17 +222,16 @@ class Memory(object):
         month = month if month is not None else t.tm_mon
         year = year if year is not None else t.tm_year
         base_dir = self.base_dir
-        recently_run = set()
         cut_off_file = '%s/log.%i/%02i/%02i.log' % (base_dir,
                     year, month, day)
         logs_to_flush = list()
+        recent_runs = dict()
         for log_name in glob.glob('%s/log.*/*/*.log' % base_dir):
             if log_name < cut_off_file:
                 logs_to_flush.append(log_name)
             else:
-                recently_run = recently_run.union(l[:-1] 
-                                            for l in open(log_name, 'r'))
-        self._clear_all_but(recently_run, warn=warn)
+                recent_runs = read_log(log_name, recent_runs)
+        self._clear_all_but(recent_runs, warn=warn)
         for log_name in logs_to_flush:
             os.remove(log_name)
 
@@ -210,15 +239,10 @@ class Memory(object):
         """ Remove all the runs appart from those given to the function
             input.
         """
-        dirs = os.listdir(self.base_dir)
-        dirs = [d for d in dirs if not d.startswith('log.')]
-        old_dirs = list(set(runs).symmetric_difference(dirs))
-        for dirname in old_dirs:
-            dirname = os.path.join(self.base_dir, dirname)
-            if os.path.exists(dirname):
-                if warn:
-                    print '%s: removing directory: %s' % (self, dirname)
-                shutil.rmtree(dirname)
+        rm_all_but(self.base_dir, set(runs.keys()), warn=warn)
+        for dir_name, job_names in runs.iteritems():
+            rm_all_but(os.path.join(self.base_dir, dir_name),
+                       job_names, warn=warn)
 
     def __repr__(self):
         return '%s(base_dir=%s)' % (self.__class__.__name__, 
