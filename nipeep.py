@@ -24,6 +24,8 @@ except ImportError:
 def hash_file(filename, exists=False):
     "Return the hash of a file from its file name"
     if exists:
+        if os.path.islink(filename):
+            filename = os.readlink(filename)
         stat_results = os.stat(filename)
         return filename, stat_results.st_mtime
     return filename
@@ -35,7 +37,10 @@ def _hash(value, trait):
     if isinstance(trait.trait_type, File):
         return hash_file(value, exists=trait.trait_type.exists)
     elif isinstance(trait.trait_type, List):
-        return [_hash(v, trait.inner_traits[0]) for v in value]
+        if isinstance(value, (list, tuple)):
+            return [_hash(v, trait.inner_traits[0]) for v in value]
+        else:
+            return _hash(value, trait.inner_traits[0])
     else:
         return value
 
@@ -145,7 +150,11 @@ def rm_all_but(base_dir, dirs_to_keep, warn=False):
         dirs_to_keep: set
             The names of the directories to keep
     """
-    all_dirs = os.listdir(base_dir)
+    try:
+        all_dirs = os.listdir(base_dir)
+    except OSError:
+        "Dir has been deleted"
+        return
     all_dirs = [d for d in all_dirs if not d.startswith('log.')]
     dirs_to_rm = list(dirs_to_keep.symmetric_difference(all_dirs))
     for dir_name in dirs_to_rm:
